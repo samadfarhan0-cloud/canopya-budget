@@ -1,0 +1,660 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Canopya — Investment Dashboard</title>
+<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,700;1,400&family=DM+Mono:wght@300;400;500&family=Cormorant+Garamond:ital,wght@0,300;0,600;1,300&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<!-- Firebase -->
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+import { getDatabase, ref, onValue, set, remove, push } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
+
+const FIREBASE_URL = "https://canopya-budget-default-rtdb.asia-southeast1.firebasedatabase.app";
+
+const app = initializeApp({ databaseURL: FIREBASE_URL });
+const db  = getDatabase(app);
+const itemsRef = ref(db, 'items');
+
+// ── CATEGORIES ──
+const CATEGORIES = {
+  'Professional Fees': { color: '#C8832A' },
+  'Site Preparation':  { color: '#7AB648' },
+  'Structural':        { color: '#4A8FA8' },
+  'Materials':         { color: '#D4A843' },
+  'Finishes':          { color: '#A8C5DA' },
+  'Electrical':        { color: '#E07050' },
+  'Plumbing':          { color: '#5C9E8A' },
+  'Labour':            { color: '#8B6E4E' },
+  'Infrastructure':    { color: '#2D5016' },
+  'Contingency':       { color: '#6B7B8A' },
+  'Other':             { color: '#8899A6' },
+};
+
+const DEFAULT_ITEMS = [
+  { name:'Architect',                           category:'Professional Fees',  amount:105000 },
+  { name:'Architect Accomodation',              category:'Professional Fees',  amount:0 },
+  { name:'Building permit',                     category:'Professional Fees',  amount:0 },
+  { name:'Structural & civil engineering fee',  category:'Professional Fees',  amount:0 },
+  { name:'Soil investigation / site analysis',  category:'Professional Fees',  amount:0 },
+  { name:'Site clearing & grubbing',            category:'Site Preparation',   amount:0 },
+  { name:'Temporary site office/storage',       category:'Site Preparation',   amount:0 },
+  { name:'Earthworks / excavation',             category:'Site Preparation',   amount:0 },
+  { name:'Road/driveway access improvement',    category:'Site Preparation',   amount:0 },
+  { name:'Landscaping / grading',               category:'Site Preparation',   amount:0 },
+  { name:'Concrete footings & columns',         category:'Structural',         amount:0 },
+  { name:'CHB / hollow block walls',            category:'Structural',         amount:0 },
+  { name:'Beams & slabs',                       category:'Structural',         amount:0 },
+  { name:'Roof framing (steel truss or wood)',  category:'Structural',         amount:0 },
+  { name:'Roofing materials',                   category:'Materials',          amount:0 },
+  { name:'Reinforcing steel (rebar)',           category:'Materials',          amount:0 },
+  { name:'Portland cement',                     category:'Materials',          amount:0 },
+  { name:'Sand & gravel / aggregates',          category:'Materials',          amount:0 },
+  { name:'Doors (main, interior, back)',        category:'Finishes',           amount:0 },
+  { name:'Windows (aluminum/wood frame)',       category:'Finishes',           amount:0 },
+  { name:'Wall plastering & painting',          category:'Finishes',           amount:0 },
+  { name:'Floor tiles (living, bedrooms)',      category:'Finishes',           amount:0 },
+  { name:'Comfort room tiles & fixtures',       category:'Finishes',           amount:0 },
+  { name:'Kitchen counter & sink',              category:'Finishes',           amount:0 },
+  { name:'Ceiling (PVC, gypsum, or GI)',        category:'Finishes',           amount:0 },
+  { name:'Painting (exterior & interior)',      category:'Finishes',           amount:0 },
+  { name:'Electrical wiring & conduit',         category:'Electrical',         amount:0 },
+  { name:'Circuit breaker & panel board',       category:'Electrical',         amount:0 },
+  { name:'Outlets, switches, lighting fixtures',category:'Electrical',         amount:0 },
+  { name:'Generator / inverter / solar (optional)',category:'Electrical',      amount:0 },
+  { name:'Electrical connection (Meralco/VRESCO)',category:'Electrical',       amount:0 },
+  { name:'Waterline piping (PVC/PPR)',          category:'Plumbing',           amount:0 },
+  { name:'Drain & sewage lines',                category:'Plumbing',           amount:0 },
+  { name:'Septic tank construction',            category:'Plumbing',           amount:0 },
+  { name:'Water tank / cistern',                category:'Plumbing',           amount:0 },
+  { name:'Pump / pressure system',              category:'Plumbing',           amount:0 },
+  { name:'Water source (deepwell / connection)',category:'Plumbing',           amount:0 },
+  { name:'Master mason / foreman',              category:'Labour',             amount:0 },
+  { name:'Skilled laborers (masons, carpenters)',category:'Labour',            amount:0 },
+  { name:'Unskilled laborers / helpers',        category:'Labour',             amount:0 },
+  { name:'Electrical contractor (labor only)',  category:'Labour',             amount:0 },
+  { name:'Plumbing contractor (labor only)',    category:'Labour',             amount:0 },
+  { name:'Perimeter fence / gate',             category:'Infrastructure',      amount:0 },
+  { name:'Contingency fund (5%)',               category:'Contingency',        amount:0 },
+  { name:'Miscellaneous materials',             category:'Contingency',        amount:0 },
+  { name:'Equipment rental (mixer, scaffolding)',category:'Contingency',       amount:0 },
+  { name:'Transportation / hauling',            category:'Contingency',        amount:0 },
+];
+
+const TOTAL_CAPITAL = 4700000;
+let ALL_ITEMS = []; // { fbKey, name, category, color, amount }
+let chartsReady = false;
+let donutChart, catChart, barChart;
+
+function fmt(n) {
+  return '₱' + Number(n).toLocaleString('en-PH', { minimumFractionDigits:0, maximumFractionDigits:0 });
+}
+function getSpent()   { return ALL_ITEMS.reduce((s,i) => s + (i.amount||0), 0); }
+function getBalance() { return TOTAL_CAPITAL - getSpent(); }
+function getFunded()  { return ALL_ITEMS.filter(i => i.amount > 0).length; }
+function catColor(cat){ return (CATEGORIES[cat] || CATEGORIES['Other']).color; }
+
+// ── SEED DEFAULT DATA — only if Firebase has never been seeded ──
+const seededFlagRef = ref(db, 'meta/seeded');
+onValue(seededFlagRef, async (flagSnap) => {
+  if (!flagSnap.exists()) {
+    // First ever load — write defaults then set the flag
+    setStatus('First run — setting up your budget…');
+    for (const item of DEFAULT_ITEMS) {
+      await push(itemsRef, { name: item.name, category: item.category, amount: item.amount });
+    }
+    await set(seededFlagRef, true);
+  }
+}, { onlyOnce: true });
+
+// ── FIREBASE LIVE LISTENER ──
+onValue(itemsRef, (snapshot) => {
+  ALL_ITEMS = [];
+  if (snapshot.exists()) {
+    snapshot.forEach(child => {
+      const d = child.val();
+      ALL_ITEMS.push({
+        fbKey:    child.key,
+        name:     d.name,
+        category: d.category,
+        amount:   d.amount || 0,
+        remarks:  d.remarks || '',
+        color:    catColor(d.category),
+      });
+    });
+  }
+
+  setStatus('', false);
+
+  if (!chartsReady) {
+    initCharts();
+    populateCatSelect();
+    chartsReady = true;
+  }
+
+  // Always update KPIs, charts, table and bars on every Firebase change
+  updateCharts();
+  populateLogSelect();
+  renderTable();
+  animateBars();
+
+}, (err) => {
+  setStatus('⚠ Firebase error: ' + err.message, true);
+});
+
+// ── STATUS BAR ──
+function setStatus(msg, isError) {
+  const el = document.getElementById('sync-status');
+  if (!msg) { el.style.display = 'none'; return; }
+  el.style.display = 'flex';
+  el.style.borderColor = isError ? 'rgba(224,112,80,0.4)' : 'rgba(122,182,72,0.3)';
+  el.style.color = isError ? '#E07050' : 'var(--leaf)';
+  el.textContent = msg;
+}
+
+// ── CHARTS ──
+function initCharts() {
+  const textColor = 'rgba(245,237,216,0.55)';
+  const gridColor = 'rgba(245,237,216,0.06)';
+  Chart.defaults.color = textColor;
+  Chart.defaults.font.family = "'DM Mono', monospace";
+  Chart.defaults.font.size = 10;
+
+  donutChart = new Chart(document.getElementById('donutChart'), {
+    type: 'doughnut',
+    data: {
+      labels: ['Disbursed', 'Available'],
+      datasets: [{ data: [getSpent(), getBalance()], backgroundColor: ['#C8832A','rgba(74,122,40,0.7)'], borderColor:['#1A1208'], borderWidth:3, hoverOffset:8 }]
+    },
+    options: { cutout:'68%', responsive:true, maintainAspectRatio:false,
+      plugins: { legend:{ position:'bottom', labels:{ padding:16, boxWidth:10, color:textColor }},
+        tooltip:{ callbacks:{ label: ctx => ' '+fmt(ctx.parsed)+' ('+(ctx.parsed/TOTAL_CAPITAL*100).toFixed(1)+'%)'}}}}
+  });
+
+  const catLabels  = Object.keys(CATEGORIES);
+  const catAmounts = catLabels.map(cat => ALL_ITEMS.filter(i=>i.category===cat).reduce((s,i)=>s+i.amount,0));
+  const catColors  = catLabels.map(cat => CATEGORIES[cat].color);
+
+  catChart = new Chart(document.getElementById('categoryChart'), {
+    type: 'doughnut',
+    data: { labels: catLabels, datasets:[{ data:catAmounts, backgroundColor:catColors.map(c=>c+'CC'), borderColor:catColors, borderWidth:1, hoverOffset:8 }]},
+    options:{ cutout:'50%', responsive:true, maintainAspectRatio:false,
+      plugins:{ legend:{ position:'right', labels:{ padding:10, boxWidth:8, font:{size:9}}},
+        tooltip:{ callbacks:{ label: ctx => ' '+fmt(ctx.parsed)}}}}
+  });
+
+  const funded    = ALL_ITEMS.filter(i=>i.amount>0);
+  const barLabels = funded.length ? funded.map(i=>i.name.length>22?i.name.slice(0,22)+'…':i.name) : ['No expenses yet'];
+  const barData   = funded.length ? funded.map(i=>i.amount) : [0];
+  const barColors = funded.length ? funded.map(i=>i.color)  : ['#444'];
+
+  barChart = new Chart(document.getElementById('barChart'), {
+    type:'bar',
+    data:{ labels:barLabels, datasets:[{ label:'Amount Spent (₱)', data:barData, backgroundColor:barColors.map(c=>c+'BB'), borderColor:barColors, borderWidth:1, borderRadius:0 }]},
+    options:{ responsive:true, maintainAspectRatio:false,
+      plugins:{ legend:{display:false}, tooltip:{ callbacks:{ label: ctx=>' '+fmt(ctx.parsed.y)}}},
+      scales:{
+        x:{ grid:{color:gridColor}, ticks:{color:textColor,maxRotation:35,minRotation:20}},
+        y:{ grid:{color:gridColor}, ticks:{color:textColor, callback:v=>'₱'+(v>=1000?(v/1000).toFixed(0)+'k':v)}}
+      }}
+  });
+}
+
+function updateCharts() {
+  const spent = getSpent(), balance = getBalance();
+
+  // Always update KPI cards and bars
+  document.getElementById('kpi-spent').textContent     = fmt(spent);
+  document.getElementById('kpi-spent-pct').textContent = (spent/TOTAL_CAPITAL*100).toFixed(1)+'% disbursed';
+  document.getElementById('kpi-balance').textContent   = fmt(balance);
+  document.getElementById('kpi-balance-pct').textContent = (balance/TOTAL_CAPITAL*100).toFixed(1)+'% remaining';
+  document.getElementById('kpi-funded').textContent    = getFunded()+' / '+ALL_ITEMS.length;
+  document.getElementById('leg-spent').textContent     = fmt(spent)+' ('+(spent/TOTAL_CAPITAL*100).toFixed(1)+'%)';
+  document.getElementById('leg-balance').textContent   = fmt(balance)+' ('+(balance/TOTAL_CAPITAL*100).toFixed(1)+'%)';
+
+  // Only update charts if they have been initialised
+  if (!chartsReady) return;
+
+  donutChart.data.datasets[0].data = [spent, balance];
+  donutChart.update();
+
+  const catAmounts = Object.keys(CATEGORIES).map(cat=>ALL_ITEMS.filter(i=>i.category===cat).reduce((s,i)=>s+i.amount,0));
+  catChart.data.datasets[0].data = catAmounts;
+  catChart.update();
+
+  const funded = ALL_ITEMS.filter(i=>i.amount>0);
+  barChart.data.labels = funded.length ? funded.map(i=>i.name.length>22?i.name.slice(0,22)+'…':i.name) : ['No expenses yet'];
+  barChart.data.datasets[0].data = funded.length ? funded.map(i=>i.amount) : [0];
+  barChart.data.datasets[0].backgroundColor = funded.length ? funded.map(i=>i.color+'BB') : ['#444'];
+  barChart.data.datasets[0].borderColor      = funded.length ? funded.map(i=>i.color)      : ['#444'];
+  barChart.update();
+}
+
+function animateBars() {
+  const spent = getSpent(), balance = getBalance();
+  setTimeout(() => {
+    document.getElementById('spent-bar').style.width   = (spent/TOTAL_CAPITAL*100).toFixed(1)+'%';
+    document.getElementById('balance-bar').style.width = (balance/TOTAL_CAPITAL*100).toFixed(1)+'%';
+  }, 300);
+}
+
+// ── TABLE ──
+function renderTable() {
+  const tbody = document.getElementById('items-tbody');
+  tbody.innerHTML = '';
+  ALL_ITEMS.forEach((item) => {
+    const hasMoney = item.amount > 0;
+    const tr = document.createElement('tr');
+    tr.dataset.fbkey = item.fbKey;
+    tr.innerHTML = `
+      <td>${item.name}</td>
+      <td><span class="cat-badge" style="background:${item.color}22;color:${item.color};border:1px solid ${item.color}44">${item.category}</span></td>
+      <td class="amount ${hasMoney?'':'empty'}">${hasMoney?fmt(item.amount):'—'}</td>
+      <td style="text-align:center">
+        <span class="status-dot" style="background:${hasMoney?'#7AB648':'rgba(245,237,216,0.15)'}"></span>
+        <span style="font-size:9px;letter-spacing:.1em;color:rgba(245,237,216,${hasMoney?'.5':'.2'})">${hasMoney?'FUNDED':'PENDING'}</span>
+      </td>
+      <td>
+        <input class="remarks-input" data-fbkey="${item.fbKey}" type="text" value="${item.remarks||''}" placeholder="Add remark…" maxlength="200">
+      </td>
+      <td style="text-align:center">
+        <button class="del-btn" title="Delete item" data-fbkey="${item.fbKey}">×</button>
+      </td>
+    `;
+    tbody.appendChild(tr);
+  });
+
+  // Attach delete listeners
+  tbody.querySelectorAll('.del-btn').forEach(btn => {
+    btn.addEventListener('click', () => handleDelete(btn));
+  });
+
+  // Attach remarks save listeners — saves to Firebase on blur or Enter
+  tbody.querySelectorAll('.remarks-input').forEach(input => {
+    const saveRemarks = () => {
+      const fbKey = input.dataset.fbkey;
+      set(ref(db, 'items/' + fbKey + '/remarks'), input.value.trim());
+    };
+    input.addEventListener('blur', saveRemarks);
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { input.blur(); } });
+  });
+}
+
+function handleDelete(btn) {
+  if (!btn.dataset.armed) {
+    btn.dataset.armed = '1';
+    btn.textContent = '✕';
+    btn.style.color = '#E07050';
+    btn.style.borderColor = 'rgba(224,112,80,0.5)';
+    btn.style.background = 'rgba(224,112,80,0.1)';
+    btn.title = 'Click again to confirm delete';
+    setTimeout(() => {
+      if (btn.dataset.armed) {
+        delete btn.dataset.armed;
+        btn.textContent = '×';
+        btn.style.cssText = '';
+        btn.title = 'Delete item';
+      }
+    }, 3000);
+    return;
+  }
+  const fbKey = btn.dataset.fbkey;
+  const tr = btn.closest('tr');
+  tr.classList.add('deleting');
+  setTimeout(() => remove(ref(db, 'items/' + fbKey)), 280);
+}
+
+// ── LOG EXPENSE SELECT ──
+function populateLogSelect() {
+  const sel = document.getElementById('item-select');
+  const prev = sel.value;
+  sel.innerHTML = '';
+  ALL_ITEMS.forEach(item => {
+    const opt = document.createElement('option');
+    opt.value = item.fbKey;
+    opt.textContent = item.name + (item.amount > 0 ? ' ('+fmt(item.amount)+')' : '');
+    sel.appendChild(opt);
+  });
+  if (prev) sel.value = prev;
+}
+
+// ── LOG EXPENSE ──
+window.logExpense = function() {
+  const sel = document.getElementById('item-select');
+  const fbKey = sel.value;
+  const amt = parseFloat(document.getElementById('item-amount').value);
+  if (isNaN(amt) || amt < 0) { alert('Enter a valid amount'); return; }
+  set(ref(db, 'items/' + fbKey + '/amount'), amt);
+  document.getElementById('item-amount').value = '';
+  showFlash('sync-status', '✓ Expense saved & synced', false);
+};
+
+// ── ADD CUSTOM ITEM ──
+window.addCustomItem = function() {
+  const nameEl = document.getElementById('new-item-name');
+  const catEl  = document.getElementById('new-item-cat');
+  const amtEl  = document.getElementById('new-item-amount');
+  const remEl  = document.getElementById('new-item-remarks');
+  const msgEl  = document.getElementById('add-item-msg');
+  const name   = nameEl.value.trim();
+  const cat    = catEl.value;
+  const amt    = parseFloat(amtEl.value) || 0;
+  const rem    = remEl.value.trim();
+
+  if (!name) {
+    msgEl.style.color = '#E07050';
+    msgEl.textContent = '⚠ Please enter an item name.';
+    msgEl.style.display = 'block';
+    nameEl.focus();
+    return;
+  }
+  push(itemsRef, { name, category: cat, amount: amt, remarks: rem });
+  nameEl.value = '';
+  amtEl.value  = '';
+  remEl.value  = '';
+  msgEl.style.color = 'var(--leaf)';
+  msgEl.textContent = '✓ "'+name+'" added to '+cat+(amt>0?' — '+fmt(amt):'')+'.';
+  msgEl.style.display = 'block';
+  setTimeout(() => { msgEl.style.display = 'none'; }, 3500);
+};
+
+function populateCatSelect() {
+  const sel = document.getElementById('new-item-cat');
+  sel.innerHTML = '';
+  Object.keys(CATEGORIES).forEach(cat => {
+    const opt = document.createElement('option');
+    opt.value = cat; opt.textContent = cat;
+    sel.appendChild(opt);
+  });
+}
+
+function showFlash(id, msg, isError) {
+  const el = document.getElementById(id);
+  el.style.display = 'flex';
+  el.style.color = isError ? '#E07050' : 'var(--leaf)';
+  el.textContent = msg;
+  setTimeout(() => { el.style.display = 'none'; }, 3000);
+}
+
+// Live date
+document.getElementById('live-date').textContent = new Date().toLocaleDateString('en-SG',{year:'numeric',month:'long',day:'numeric'});
+</script>
+<style>
+  :root {
+    --sand: #F5EDD8;
+    --sand-dark: #E8D9B8;
+    --earth: #8B6E4E;
+    --earth-deep: #5C4432;
+    --forest: #2D5016;
+    --forest-mid: #4A7A28;
+    --leaf: #7AB648;
+    --sky: #A8C5DA;
+    --water: #4A8FA8;
+    --accent: #C8832A;
+    --accent-gold: #D4A843;
+    --dark: #1A1208;
+    --text-mid: #4A3728;
+    --white: #FDFAF4;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background-color: var(--dark);
+    color: var(--sand);
+    font-family: 'DM Mono', monospace;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  body::before {
+    content: '';
+    position: fixed; inset: 0;
+    background:
+      radial-gradient(ellipse at 20% 0%, rgba(74,122,40,0.15) 0%, transparent 60%),
+      radial-gradient(ellipse at 80% 100%, rgba(74,143,168,0.12) 0%, transparent 60%),
+      radial-gradient(ellipse at 60% 40%, rgba(200,131,42,0.06) 0%, transparent 50%);
+    pointer-events: none; z-index: 0;
+  }
+
+  .container { max-width:1200px; margin:0 auto; padding:40px 24px; position:relative; z-index:1; }
+
+  /* SYNC STATUS */
+  #sync-status {
+    display: none;
+    align-items: center;
+    gap: 8px;
+    font-size: 10px;
+    letter-spacing: 0.15em;
+    padding: 10px 16px;
+    border: 1px solid rgba(122,182,72,0.3);
+    color: var(--leaf);
+    margin-bottom: 20px;
+    background: rgba(122,182,72,0.05);
+  }
+
+  #sync-status::before { content: '⬤'; font-size: 7px; animation: pulse 1.5s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
+
+  /* HEADER */
+  .header { display:grid; grid-template-columns:1fr auto; align-items:start; gap:24px; margin-bottom:48px; padding-bottom:32px; border-bottom:1px solid rgba(245,237,216,0.12); }
+  .brand-mark { font-family:'Cormorant Garamond',serif; font-style:italic; font-size:11px; font-weight:300; letter-spacing:0.3em; color:var(--accent-gold); text-transform:uppercase; margin-bottom:8px; opacity:0.8; }
+  h1 { font-family:'Playfair Display',serif; font-size:clamp(32px,5vw,52px); font-weight:700; line-height:1.1; color:var(--white); letter-spacing:-0.02em; }
+  h1 span { color:var(--leaf); }
+  .subtitle { font-size:11px; letter-spacing:0.15em; color:rgba(245,237,216,0.45); margin-top:10px; text-transform:uppercase; }
+  .header-meta { text-align:right; }
+  .lot-badge { display:inline-block; padding:6px 14px; background:rgba(122,182,72,0.12); border:1px solid rgba(122,182,72,0.3); border-radius:2px; font-size:10px; letter-spacing:0.2em; color:var(--leaf); text-transform:uppercase; margin-bottom:8px; }
+  .date-tag { font-size:10px; color:rgba(245,237,216,0.35); letter-spacing:0.1em; }
+
+  /* KPI */
+  .kpi-strip { display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:2px; margin-bottom:40px; }
+  .kpi { background:rgba(245,237,216,0.04); border:1px solid rgba(245,237,216,0.08); padding:24px 20px; position:relative; overflow:hidden; cursor:default; transition:background 0.3s; }
+  .kpi:hover { background:rgba(245,237,216,0.07); }
+  .kpi::before { content:''; position:absolute; bottom:0;left:0;right:0; height:2px; background:var(--bar-color,var(--accent-gold)); }
+  .kpi-label { font-size:9px; letter-spacing:0.25em; text-transform:uppercase; color:rgba(245,237,216,0.4); margin-bottom:10px; }
+  .kpi-value { font-family:'Playfair Display',serif; font-size:clamp(20px,3vw,28px); font-weight:700; color:var(--white); letter-spacing:-0.02em; }
+  .kpi-value.green { color:var(--leaf); }
+  .kpi-value.red   { color:#E07050; }
+  .kpi-sub { font-size:10px; color:rgba(245,237,216,0.3); margin-top:4px; }
+
+  /* BALANCE BAR */
+  .balance-section { background:rgba(245,237,216,0.04); border:1px solid rgba(245,237,216,0.08); padding:28px; margin-bottom:24px; }
+  .balance-header { display:flex; justify-content:space-between; align-items:baseline; margin-bottom:20px; }
+  .section-title { font-family:'Playfair Display',serif; font-size:16px; font-weight:400; font-style:italic; color:var(--sand); }
+  .section-label { font-size:9px; letter-spacing:0.2em; color:rgba(245,237,216,0.3); text-transform:uppercase; }
+  .capital-bar-track { background:rgba(245,237,216,0.07); height:8px; overflow:hidden; margin-bottom:16px; }
+  .capital-bar-fill { height:100%; background:linear-gradient(90deg,var(--accent) 0%,var(--accent-gold) 100%); width:0%; transition:width 1.5s cubic-bezier(0.16,1,0.3,1) 0.3s; }
+  .capital-remaining-fill { height:100%; background:linear-gradient(90deg,var(--forest-mid) 0%,var(--leaf) 100%); margin-top:4px; width:0%; transition:width 1.5s cubic-bezier(0.16,1,0.3,1) 0.5s; }
+  .bar-legend { display:flex; gap:24px; flex-wrap:wrap; }
+  .legend-item { display:flex; align-items:center; gap:8px; font-size:10px; color:rgba(245,237,216,0.5); letter-spacing:0.1em; }
+  .legend-dot { width:8px; height:8px; border-radius:50%; flex-shrink:0; }
+
+  /* CHARTS */
+  .charts-grid { display:grid; grid-template-columns:1fr 1fr; gap:2px; margin-bottom:24px; }
+  .chart-card { background:rgba(245,237,216,0.04); border:1px solid rgba(245,237,216,0.08); padding:24px; }
+  .chart-card-wide { grid-column:1/-1; }
+  .chart-title { font-size:9px; letter-spacing:0.25em; text-transform:uppercase; color:rgba(245,237,216,0.4); margin-bottom:20px; display:flex; justify-content:space-between; align-items:center; }
+  .chart-title span { font-family:'Playfair Display',serif; font-style:italic; font-size:14px; color:var(--sand); letter-spacing:0; text-transform:none; font-weight:400; }
+  .chart-container { position:relative; height:260px; }
+  .chart-container-tall { height:320px; }
+
+  /* TABLE */
+  .table-section { background:rgba(245,237,216,0.04); border:1px solid rgba(245,237,216,0.08); padding:24px; margin-bottom:24px; }
+  .items-table { width:100%; border-collapse:collapse; font-size:11px; }
+  .items-table th { font-size:9px; letter-spacing:0.2em; text-transform:uppercase; color:rgba(245,237,216,0.3); padding:10px 12px; text-align:left; border-bottom:1px solid rgba(245,237,216,0.08); }
+  .items-table td { padding:10px 12px; border-bottom:1px solid rgba(245,237,216,0.05); color:rgba(245,237,216,0.7); vertical-align:middle; }
+  .items-table tr:hover td { background:rgba(245,237,216,0.03); color:var(--sand); }
+  .cat-badge { display:inline-block; padding:2px 8px; font-size:8px; letter-spacing:0.15em; text-transform:uppercase; border-radius:1px; }
+  .amount { font-family:'Playfair Display',serif; font-size:13px; color:var(--accent-gold); text-align:right; }
+  .amount.empty { color:rgba(245,237,216,0.2); font-family:'DM Mono',monospace; font-size:10px; }
+  .status-dot { width:6px; height:6px; border-radius:50%; display:inline-block; margin-right:6px; }
+
+  /* ADD ITEM ROW */
+  .add-item-row td { padding:14px 12px; border-bottom:none; border-top:1px solid rgba(122,182,72,0.15); background:rgba(122,182,72,0.04); }
+  .add-item-row:hover td { background:rgba(122,182,72,0.07); }
+  .add-input { background:rgba(245,237,216,0.06); border:1px solid rgba(245,237,216,0.15); color:var(--sand); font-family:'DM Mono',monospace; font-size:11px; padding:7px 10px; width:100%; outline:none; }
+  .add-input:focus { border-color:rgba(122,182,72,0.5); background:rgba(122,182,72,0.06); }
+  .add-input::placeholder { color:rgba(245,237,216,0.2); }
+  .add-select { background:rgba(245,237,216,0.06); border:1px solid rgba(245,237,216,0.15); color:var(--sand); font-family:'DM Mono',monospace; font-size:10px; padding:7px 10px; width:100%; outline:none; cursor:pointer; }
+  .add-select:focus { border-color:rgba(122,182,72,0.5); }
+  .add-btn { background:rgba(122,182,72,0.15); border:1px solid rgba(122,182,72,0.35); color:var(--leaf); font-family:'DM Mono',monospace; font-size:9px; letter-spacing:0.2em; text-transform:uppercase; padding:7px 14px; cursor:pointer; transition:background 0.2s,border-color 0.2s; white-space:nowrap; width:100%; }
+  .add-btn:hover { background:rgba(122,182,72,0.28); border-color:rgba(122,182,72,0.6); }
+
+  /* REMARKS INPUT */
+  .remarks-input { background:transparent; border:none; border-bottom:1px solid rgba(245,237,216,0.1); color:rgba(245,237,216,0.6); font-family:'DM Mono',monospace; font-size:10px; padding:4px 6px; width:100%; min-width:140px; outline:none; transition:border-color 0.2s,background 0.2s; }
+  .remarks-input:focus { border-bottom-color:rgba(122,182,72,0.5); background:rgba(122,182,72,0.05); color:var(--sand); }
+  .remarks-input::placeholder { color:rgba(245,237,216,0.15); }
+
+  /* DELETE BUTTON */
+  .del-btn { background:none; border:1px solid transparent; color:rgba(224,112,80,0.25); font-size:14px; line-height:1; width:26px; height:26px; border-radius:2px; cursor:pointer; transition:color 0.18s,border-color 0.18s,background 0.18s; display:inline-flex; align-items:center; justify-content:center; }
+  .del-btn:hover { color:#E07050; border-color:rgba(224,112,80,0.4); background:rgba(224,112,80,0.08); }
+  tr.deleting td { opacity:0.3; transition:opacity 0.3s; }
+
+  /* LOG EXPENSE */
+  .update-section { background:rgba(122,182,72,0.06); border:1px solid rgba(122,182,72,0.2); padding:20px 24px; margin-bottom:24px; display:flex; align-items:center; gap:16px; flex-wrap:wrap; }
+  .update-label { font-size:9px; letter-spacing:0.2em; text-transform:uppercase; color:var(--leaf); flex-shrink:0; }
+  .update-select { background:rgba(245,237,216,0.06); border:1px solid rgba(245,237,216,0.15); color:var(--sand); font-family:'DM Mono',monospace; font-size:11px; padding:8px 12px; flex:1; min-width:200px; outline:none; }
+  .update-input { background:rgba(245,237,216,0.06); border:1px solid rgba(245,237,216,0.15); color:var(--sand); font-family:'DM Mono',monospace; font-size:11px; padding:8px 12px; width:160px; outline:none; }
+  .update-input::placeholder { color:rgba(245,237,216,0.2); }
+  .update-btn { background:var(--forest-mid); border:none; color:var(--white); font-family:'DM Mono',monospace; font-size:9px; letter-spacing:0.2em; text-transform:uppercase; padding:9px 18px; cursor:pointer; transition:background 0.2s; }
+  .update-btn:hover { background:var(--leaf); }
+
+  /* FOOTER */
+  .footer { padding-top:24px; border-top:1px solid rgba(245,237,216,0.08); display:flex; justify-content:space-between; align-items:center; font-size:9px; letter-spacing:0.15em; color:rgba(245,237,216,0.2); text-transform:uppercase; }
+
+  /* ANIMATIONS */
+  @keyframes fadeUp { from{opacity:0;transform:translateY(20px)} to{opacity:1;transform:translateY(0)} }
+  .fade-up { opacity:0; animation:fadeUp 0.7s cubic-bezier(0.16,1,0.3,1) forwards; }
+  .delay-1{animation-delay:0.1s} .delay-2{animation-delay:0.2s} .delay-3{animation-delay:0.3s} .delay-4{animation-delay:0.4s} .delay-5{animation-delay:0.5s}
+
+  @media (max-width:700px) {
+    .charts-grid { grid-template-columns:1fr; }
+    .header { grid-template-columns:1fr; }
+    .header-meta { text-align:left; }
+    .footer { flex-direction:column; gap:6px; align-items:flex-start; }
+  }
+</style>
+</head>
+<body>
+<div class="container">
+
+  <!-- SYNC STATUS -->
+  <div id="sync-status"></div>
+
+  <!-- HEADER -->
+  <header class="header fade-up">
+    <div>
+      <div class="brand-mark">Resort Cabin Development · Siquijor, Philippines</div>
+      <h1>Canopya <span>Budget</span></h1>
+      <div class="subtitle">Cang-Isad · Lot 3838, PLS 1086-D · 1,000 sqm</div>
+    </div>
+    <div class="header-meta">
+      <div class="lot-badge">🟢 Live Sync</div>
+      <div class="date-tag" id="live-date">—</div>
+    </div>
+  </header>
+
+  <!-- KPI STRIP -->
+  <div class="kpi-strip fade-up delay-1">
+    <div class="kpi" style="--bar-color:var(--accent-gold)">
+      <div class="kpi-label">Total Capital</div>
+      <div class="kpi-value">₱4,700,000</div>
+      <div class="kpi-sub">Project budget</div>
+    </div>
+    <div class="kpi" style="--bar-color:#E07050">
+      <div class="kpi-label">Total Spent</div>
+      <div class="kpi-value red" id="kpi-spent">—</div>
+      <div class="kpi-sub" id="kpi-spent-pct">loading…</div>
+    </div>
+    <div class="kpi" style="--bar-color:var(--leaf)">
+      <div class="kpi-label">Capital Balance</div>
+      <div class="kpi-value green" id="kpi-balance">—</div>
+      <div class="kpi-sub" id="kpi-balance-pct">loading…</div>
+    </div>
+    <div class="kpi" style="--bar-color:var(--sky)">
+      <div class="kpi-label">Items Funded</div>
+      <div class="kpi-value" id="kpi-funded">—</div>
+      <div class="kpi-sub">line items</div>
+    </div>
+  </div>
+
+  <!-- BALANCE BAR -->
+  <div class="balance-section fade-up delay-2">
+    <div class="balance-header">
+      <span class="section-title">Capital Allocation</span>
+      <span class="section-label">₱4,700,000 total</span>
+    </div>
+    <div class="capital-bar-track"><div class="capital-bar-fill" id="spent-bar"></div></div>
+    <div class="capital-bar-track"><div class="capital-remaining-fill" id="balance-bar"></div></div>
+    <div class="bar-legend">
+      <div class="legend-item"><div class="legend-dot" style="background:var(--accent-gold)"></div>Disbursed — <span id="leg-spent">—</span></div>
+      <div class="legend-item"><div class="legend-dot" style="background:var(--leaf)"></div>Available — <span id="leg-balance">—</span></div>
+    </div>
+  </div>
+
+  <!-- CHARTS -->
+  <div class="charts-grid fade-up delay-3">
+    <div class="chart-card">
+      <div class="chart-title"><span>Spent vs. Available</span>allocation</div>
+      <div class="chart-container"><canvas id="donutChart"></canvas></div>
+    </div>
+    <div class="chart-card">
+      <div class="chart-title"><span>Category Breakdown</span>by group</div>
+      <div class="chart-container"><canvas id="categoryChart"></canvas></div>
+    </div>
+    <div class="chart-card chart-card-wide">
+      <div class="chart-title"><span>Line Item Spending</span>actual vs. estimated</div>
+      <div class="chart-container chart-container-tall"><canvas id="barChart"></canvas></div>
+    </div>
+  </div>
+
+  <!-- LOG EXPENSE -->
+  <div class="update-section fade-up delay-4">
+    <div class="update-label">↗ Log Expense</div>
+    <select class="update-select" id="item-select"></select>
+    <input class="update-input" id="item-amount" type="number" placeholder="Amount (₱)" min="0">
+    <button class="update-btn" onclick="logExpense()">Record</button>
+  </div>
+
+  <!-- LINE ITEMS TABLE -->
+  <div class="table-section fade-up delay-4">
+    <div class="chart-title" style="margin-bottom:16px;">
+      <span>All Line Items</span>full breakdown
+    </div>
+    <table class="items-table">
+      <thead>
+        <tr>
+          <th>Item</th>
+          <th>Category</th>
+          <th style="text-align:right">Amount (₱)</th>
+          <th style="text-align:center">Status</th>
+          <th>Remarks</th>
+          <th style="text-align:center;width:48px;"></th>
+        </tr>
+      </thead>
+      <tbody id="items-tbody"></tbody>
+      <tfoot>
+        <tr class="add-item-row">
+          <td><input class="add-input" id="new-item-name" type="text" placeholder="New item name…" maxlength="60"></td>
+          <td><select class="add-select" id="new-item-cat"></select></td>
+          <td><input class="add-input" id="new-item-amount" type="number" placeholder="Amount (₱)" min="0" style="text-align:right;"></td>
+          <td style="text-align:center;"><button class="add-btn" onclick="addCustomItem()">+ Add Item</button></td>
+          <td><input class="add-input" id="new-item-remarks" type="text" placeholder="Remarks…" maxlength="200"></td>
+          <td></td>
+        </tr>
+      </tfoot>
+    </table>
+    <div id="add-item-msg" style="font-size:10px;letter-spacing:.12em;padding:10px 12px 0;display:none;"></div>
+  </div>
+
+  <!-- FOOTER -->
+  <footer class="footer fade-up delay-5">
+    <span>Canopya Resort Development · Farhan × Ria JV</span>
+    <span>Lot 3838, Cang-Isad, Siquijor</span>
+    <span>USD 75,000 invested</span>
+  </footer>
+
+</div>
+</body>
+</html>
